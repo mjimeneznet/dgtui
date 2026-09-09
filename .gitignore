@@ -1,0 +1,11 @@
+# Local Pi runtime state
+.atl/
+
+# compiled binary
+dgtui
+
+# dependencies
+node_modules/
+
+# old artifact
+dist/
