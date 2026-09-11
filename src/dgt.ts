@@ -223,7 +223,7 @@ function semverLess(a: string, b: string): boolean {
   return false;
 }
 
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.2.1";
 
 export async function checkUpdate(): Promise<string | null> {
   const latest = await latestVersion();
