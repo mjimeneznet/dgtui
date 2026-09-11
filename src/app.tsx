@@ -64,7 +64,8 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   const camListSize = Math.max(4, dims.height - 8);
   type ListItem =
     | { kind: "cam"; pk: number; origIdx: number; cam: Camera }
-    | { kind: "radar"; pk: number; radar: Radar };
+    | { kind: "radar"; pk: number; radar: Radar }
+    | { kind: "incident"; pk: number; inc: Incident };
   const listItems = useMemo(
     () =>
       [
@@ -80,8 +81,16 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
             .filter((r) => r.road === carr && r.pk >= lo && r.pk <= (after?.pk ?? hi))
             .map((r): ListItem => ({ kind: "radar", pk: r.pk, radar: r }));
         })(),
+        ...(() => {
+          const pks = cameras.map((c) => parseFloat(String(c.pk).replace(",", ".")));
+          if (!pks.length) return [];
+          const hi = Math.max(...pks);
+          return incidents
+            .filter((n) => n.road === carr && Number.isFinite(parseFloat(String(n.pk).replace(",", "."))) && parseFloat(String(n.pk).replace(",", ".")) <= hi)
+            .map((n): ListItem => ({ kind: "incident", pk: parseFloat(String(n.pk).replace(",", ".")), inc: n }));
+        })(),
       ].sort((a, b) => a.pk - b.pk),
-    [cameras, radars, carr],
+    [cameras, radars, incidents, carr],
   );
   const camWindow = (idx: number) => {
     const start = Math.max(0, Math.min(idx - Math.floor(camListSize / 2), Math.max(0, listItems.length - camListSize)));
@@ -239,7 +248,7 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
       <box flexDirection="row" flexGrow={1}>
         <box
           flexDirection="column"
-          width={34}
+          width={17}
           border
           borderStyle="single"
           borderColor="gray"
@@ -250,6 +259,12 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
               return (
                 <text key={`r${i}-${item.pk}`} fg="yellow">
                     R {item.pk.toFixed(2).padStart(6)} {item.radar.sentido === "+" ? "↗" : "↘"}
+                </text>
+              );
+            }            if (item.kind === "incident") {
+              return (
+                <text key={`n${i}-${item.pk}`} fg="red">
+                  I {item.pk.toFixed(2).padStart(6)}
                 </text>
               );
             }
