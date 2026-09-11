@@ -198,3 +198,34 @@ export async function fetchRadars(): Promise<Radar[]> {
   }
   return out;
 }
+// ---- Update check (GitHub latest release) ----
+
+const REPO = "mjimeneznet/dgtui";
+
+export async function latestVersion(): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { tag_name?: string };
+    const tag = data.tag_name?.replace(/^v/, "");
+    return tag || null;
+  } catch {
+    return null;
+  }
+}
+
+function semverLess(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pb[i] ?? 0) > (pa[i] ?? 0)) return true;
+    if ((pb[i] ?? 0) < (pa[i] ?? 0)) return false;
+  }
+  return false;
+}
+
+const APP_VERSION = "0.2.0";
+
+export async function checkUpdate(): Promise<string | null> {
+  const latest = await latestVersion();
+  return latest && semverLess(APP_VERSION, latest) ? latest : null;
+}

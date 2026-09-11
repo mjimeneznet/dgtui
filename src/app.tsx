@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { fetchAllCameras, fetchIncidents, fetchRadars, fetchTraffic, tomtomEnabled, filterCameras, provinceName, type Camera, type Incident, type Radar, type Traffic } from "./dgt";
+import { fetchAllCameras, fetchIncidents, fetchRadars, fetchTraffic, checkUpdate, tomtomEnabled, filterCameras, provinceName, type Camera, type Incident, type Radar, type Traffic } from "./dgt";
 
 interface Props {
   prov: string;
@@ -19,6 +19,7 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [radars, setRadars] = useState<Radar[]>([]);
   const [traffic, setTraffic] = useState<Traffic | null>(null);
+  const [newVersion, setNewVersion] = useState<string | null>(null);
   const [incScroll, setIncScroll] = useState(0);
   const [prov, setProv] = useState(initialProv);
   const [carr, setCarr] = useState(initialCarr);
@@ -111,6 +112,7 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   };
 
   useEffect(() => {
+    checkUpdate().then((v) => setNewVersion(v));
     fetchAllCameras()
       .then((c) => {
         setAll(c);
@@ -240,7 +242,7 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   return (
     <box flexDirection="column" width="100%" height="100%" padding={1}>
       <box flexDirection="row" justifyContent="space-between" height={1}>
-        <text fg="cyan">DGTcams — cámaras de tráfico — {carr} ({prov === "*" ? "todas las provincias" : provinceName(prov)})</text>
+        <text fg="cyan">DGTcams — cámaras de tráfico — {carr} ({prov === "*" ? "todas las provincias" : provinceName(prov)}){newVersion ? `   ·   v${newVersion} disponible: descarga la nueva versión en github.com/mjimeneznet/dgtui` : ""}</text>
         <text fg="gray">p provincia · c carretera · ↑/↓ navegar · r refrescar · q salir</text>
       </box>
       {error && <text fg="red">Error: {error}</text>}
