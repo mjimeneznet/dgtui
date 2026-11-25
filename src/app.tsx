@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { fetchAllCameras, fetchIncidents, fetchRadars, fetchTraffic, checkUpdate, tomtomEnabled, filterCameras, provinceName, type Camera, type Incident, type Radar, type Traffic } from "./dgt";
+import { fetchAllCameras, fetchIncidents, fetchRadars, fetchTraffic, checkUpdate, tomtomEnabled, filterCameras, provinceName, pkValue, sameProvince, type Camera, type Incident, type Radar, type Traffic } from "./dgt";
 
 interface Props {
   prov: string;
@@ -12,6 +12,18 @@ function fmtCountdown(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// TomTom reports 0 for segments without free-flow reference; dividing by it
+// would render "Infinity%".
+function trafficLine(t: Traffic): { fg: string; txt: string } {
+  if (t.closed) return { fg: "red", txt: "Tráfico: calzada CORTADA" };
+  if (!(t.freeFlowSpeed > 0)) {
+    return { fg: "gray", txt: `Tráfico: ${t.currentSpeed} km/h (sin referencia de flujo libre)` };
+  }
+  const pct = Math.round((t.currentSpeed / t.freeFlowSpeed) * 100);
+  const fg = pct >= 80 ? "green" : pct >= 50 ? "yellow" : "red";
+  return { fg, txt: `Tráfico: ${t.currentSpeed}/${t.freeFlowSpeed} km/h (${pct}%)` };
 }
 
 export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props) {
@@ -34,7 +46,8 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   const dims = useTerminalDimensions();
   const [tick, setTick] = useState(0);
   const [countdown, setCountdown] = useState(intervalSec);
-  const [error, setError] = useState<string | null>(null);
+  const [netError, setNetError] = useState<string | null>(null);
+  const [imgError, setImgError] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const cameras = useMemo(
@@ -70,9 +83,9 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   const listItems = useMemo(
     () =>
       [
-        ...cameras.map((c, origIdx): ListItem => ({ kind: "cam", pk: parseFloat(String(c.pk).replace(",", ".")), origIdx, cam: c })),
+        ...cameras.map((c, origIdx): ListItem => ({ kind: "cam", pk: pkValue(c.pk), origIdx, cam: c })),
         ...(() => {
-          const pks = cameras.map((c) => parseFloat(String(c.pk).replace(",", ".")));
+          const pks = cameras.map((c) => pkValue(c.pk)).filter(Number.isFinite);
           if (!pks.length) return [];
           const lo = Math.min(...pks), hi = Math.max(...pks);
           const after = radars
@@ -83,70 +96,74 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
             .map((r): ListItem => ({ kind: "radar", pk: r.pk, radar: r }));
         })(),
         ...(() => {
-          const pks = cameras.map((c) => parseFloat(String(c.pk).replace(",", ".")));
+          const pks = cameras.map((c) => pkValue(c.pk)).filter(Number.isFinite);
           if (!pks.length) return [];
-          const hi = Math.max(...pks);
+          const lo = Math.min(...pks), hi = Math.max(...pks);
           return incidents
-            .filter((n) => n.road === carr && Number.isFinite(parseFloat(String(n.pk).replace(",", "."))) && parseFloat(String(n.pk).replace(",", ".")) <= hi)
-            .map((n): ListItem => ({ kind: "incident", pk: parseFloat(String(n.pk).replace(",", ".")), inc: n }));
+            .filter((n) => {
+              const pk = pkValue(n.pk);
+              return (
+                n.road === carr &&
+                Number.isFinite(pk) &&
+                pk >= lo &&
+                pk <= hi &&
+                (prov === "*" || sameProvince(n.province, prov))
+              );
+            })
+            .map((n): ListItem => ({ kind: "incident", pk: pkValue(n.pk), inc: n }));
         })(),
       ].sort((a, b) => a.pk - b.pk),
-    [cameras, radars, incidents, carr],
+    [cameras, radars, incidents, carr, prov],
   );
   const camWindow = (idx: number) => {
     const start = Math.max(0, Math.min(idx - Math.floor(camListSize / 2), Math.max(0, listItems.length - camListSize)));
     return listItems.slice(start, start + camListSize).map((it, k) => ({ item: it, i: start + k }));
   };
 
-  const reload = () => {
-    setAll([]);
+  // Kept in a ref-free closure: reload never empties the list, so the panel does
+  // not blank out while the fetch is in flight.
+  const loadCameras = useCallback(() => {
     fetchAllCameras()
       .then((c) => {
         setAll(c);
         setLastUpdate(new Date());
         setTick((t) => t + 1);
-        setCountdown(intervalSec);
+        setNetError(null);
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setNetError(String(e)))
+      .finally(() => setCountdown(intervalSec));
     fetchIncidents().then(setIncidents).catch(() => setIncidents([]));
-  };
+  }, [intervalSec]);
 
   useEffect(() => {
     checkUpdate().then((v) => setNewVersion(v));
-    fetchAllCameras()
-      .then((c) => {
-        setAll(c);
-        setLastUpdate(new Date());
-      })
-      .catch((e) => setError(String(e)));
-    fetchIncidents().then(setIncidents).catch(() => setIncidents([]));
     fetchRadars().then(setRadars).catch(() => setRadars([]));
-  }, []);
+    loadCameras();
+  }, [loadCameras]);
 
   useEffect(() => {
     setSelected(0);
     setIncScroll(0);
   }, [prov, carr]);
 
+  // A camera can disappear from the catalog between refreshes.
   useEffect(() => {
-    const id = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          fetchAllCameras()
-            .then((c2) => {
-              setAll(c2);
-              setLastUpdate(new Date());
-              setTick((t) => t + 1);
-            })
-            .catch((e) => setError(String(e)));
-              fetchIncidents().then(setIncidents).catch(() => setIncidents([]));
-          return intervalSec;
-        }
-        return c - 1;
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [intervalSec]);
+    if (selected > 0 && selected >= cameras.length) {
+      setSelected(Math.max(0, cameras.length - 1));
+    }
+  }, [cameras.length, selected]);
+
+  // Countdown only counts; the fetch runs in its own effect so no side effect
+  // ever lives inside a state updater.
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(id);
+  }, [countdown]);
+
+  useEffect(() => {
+    if (countdown === 0) loadCameras();
+  }, [countdown, loadCameras]);
 
   useKeyboard((key) => {
     if (picker) {
@@ -156,39 +173,35 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
         else if (key.name === "down") setRoadIdx((i) => Math.min(allRoads.length - 1, i + 1));
         else if (key.name === "return" || key.name === "enter") {
           setProv("*");
-          setCarr(allRoads[roadIdx] ?? "");
+          setCarr(allRoads[roadIdx] ?? allRoads[0] ?? "");
           setPicker(false);
-          reload();
+          loadCameras();
         }
       } else {
         if (key.name === "left" || key.name === "tab") setPickPane("prov");
         else if (key.name === "right") setPickPane("road");
         else if (key.name === "up") {
           if (pickPane === "prov") {
-            setProvIdx((i) => {
-              const ni = Math.max(0, i - 1);
-              setPickProv(provinces[ni]);
-              setRoadIdx(0);
-              return ni;
-            });
+            const ni = Math.max(0, provIdx - 1);
+            setProvIdx(ni);
+            setPickProv(provinces[ni]);
+            setRoadIdx(0);
           } else setRoadIdx((i) => Math.max(0, i - 1));
         } else if (key.name === "down") {
           if (pickPane === "prov") {
-            setProvIdx((i) => {
-              const ni = Math.min(provinces.length - 1, i + 1);
-              setPickProv(provinces[ni]);
-              setRoadIdx(0);
-              return ni;
-            });
+            const ni = Math.min(provinces.length - 1, provIdx + 1);
+            setProvIdx(ni);
+            setPickProv(provinces[ni]);
+            setRoadIdx(0);
           } else setRoadIdx((i) => Math.min(roads.length - 1, i + 1));
         } else if (key.name === "return" || key.name === "enter") {
           if (pickPane === "prov") {
             setPickPane("road");
           } else {
             setProv(pickProv);
-            setCarr(roads[roadIdx] ?? "");
+            setCarr(roads[roadIdx] ?? roads[0] ?? "");
             setPicker(false);
-            reload();
+            loadCameras();
           }
         }
       }
@@ -198,12 +211,12 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
       setPickMode("provroad");
       setPickProv(prov === "*" ? "28" : prov);
       setProvIdx(provinces.indexOf(prov === "*" ? "28" : prov));
-      setRoadIdx(roads.indexOf(carr));
+      setRoadIdx(Math.max(0, roads.indexOf(carr)));
       setPickPane("prov");
       setPicker(true);
     } else if (key.name === "c") {
       setPickMode("roadonly");
-      setRoadIdx(allRoads.indexOf(carr));
+      setRoadIdx(Math.max(0, allRoads.indexOf(carr)));
       setPicker(true);
     } else if (key.name === "down" || key.name === "up") {
       const dir = key.name === "down" ? 1 : -1;
@@ -214,15 +227,15 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
     }
     else if (key.name === "j") setIncScroll((v) => Math.min(v + 1, incMax));
     else if (key.name === "k") setIncScroll((v) => Math.max(v - 1, 0));
-    else if (key.name === "r") reload();
+    else if (key.name === "r") loadCameras();
     else if (key.name === "q") { renderer.destroy(); process.exit(0); }
   });
 
   const cam = cameras[selected];
 
   const camIncidents = useMemo(
-    () => incidents.filter((i) => i.road === cam?.carretera),
-    [incidents, cam],
+    () => incidents.filter((i) => i.road === cam?.carretera && sameProvince(i.province, cam?.provincia ?? prov)),
+    [incidents, cam, prov],
   );
   const INC_VISIBLE = 4;
   const incMax = Math.max(0, camIncidents.length - INC_VISIBLE);
@@ -231,12 +244,16 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
   useEffect(() => {
     setTraffic(null);
     if (!tomtomEnabled() || !cam) return;
-    const lat = parseFloat(String(cam.latitud).replace(",", "."));
-    const lon = parseFloat(String(cam.longitud).replace(",", "."));
+    const lat = pkValue(cam.latitud);
+    const lon = pkValue(cam.longitud);
     let alive = true;
     fetchTraffic(lat, lon).then((t) => { if (alive) setTraffic(t); });
     return () => { alive = false; };
   }, [cam]);
+
+  // A broken photo is per-camera: never let it stick as a global error.
+  useEffect(() => setImgError(false), [selected, tick]);
+
   const url = cam ? `${cam.imagen}?t=${tick}-${selected}` : undefined;
 
   return (
@@ -245,8 +262,8 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
         <text fg="cyan">DGTcams — cámaras de tráfico — {carr} ({prov === "*" ? "todas las provincias" : provinceName(prov)}){newVersion ? `   ·   v${newVersion} disponible: descarga la nueva versión en github.com/mjimeneznet/dgtui` : ""}</text>
         <text fg="gray">p provincia · c carretera · ↑/↓ navegar · r refrescar · q salir</text>
       </box>
-      {error && <text fg="red">Error: {error}</text>}
-      {!all.length && !error && <text>Cargando catálogo…</text>}
+      {netError && <text fg="red">Error: {netError}</text>}
+      {!all.length && !netError && <text>Cargando catálogo…</text>}
       <box flexDirection="row" flexGrow={1}>
         <box
           flexDirection="column"
@@ -291,23 +308,19 @@ export function App({ prov: initialProv, carr: initialCarr, intervalSec }: Props
               </text>
               {traffic && (
                 <box height={1} width="100%">
-                  {(() => {
-                    const pct = Math.round((traffic.currentSpeed / traffic.freeFlowSpeed) * 100);
-                    const fg = traffic.closed ? "red" : pct >= 80 ? "green" : pct >= 50 ? "yellow" : "red";
-                    const txt = traffic.closed ? "Tráfico: calzada CORTADA" : `Tráfico: ${traffic.currentSpeed}/${traffic.freeFlowSpeed} km/h (${pct}%)`;
-                    return <text fg={fg}>{txt}</text>;
-                  })()}
+                  <text fg={trafficLine(traffic).fg}>{trafficLine(traffic).txt}</text>
                 </box>
               )}
-              <box flexGrow={1} alignItems="center" justifyContent="center">
+              <box flexGrow={1} alignItems="center" justifyContent="center" flexDirection="column">
                 <image
                   key={url}
                   source={url}
                   fit="fit"
                   width="90%"
                   height="90%"
-                  onError={(e: unknown) => setError(String(e))}
+                  onError={() => setImgError(true)}
                 />
+                {imgError && <text fg="gray" flexShrink={0}>imagen no disponible todavía</text>}
               </box>
               <box
                   flexDirection="column"
