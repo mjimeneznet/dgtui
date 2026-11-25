@@ -9,13 +9,13 @@ Browse the official DGT traffic cameras with live photos, road incidents, fixed 
 ## Features
 
 - **Traffic cameras** — browse the full DGT camera catalog (`.json` from dgt.es), filtered by road or by province + road. Photos refresh automatically every 5 minutes (configurable) plus manual refresh.
-- **Live incidents** — road incidents (roadworks, closures, accidents, stopped vehicles…) parsed from the official DGT DATEX II feed. Shown under the photo with pk, description and province; scroll with `j`/`k`.
+- **Live incidents** — road incidents (roadworks, closures, accidents, stopped vehicles…) parsed from the official DGT DATEX II feed. Shown under the photo with pk, description and province, filtered to the province of the selected camera; scroll with `j`/`k`.
 - **Fixed speed cameras (radares)** — the official DGT cinemometer inventory interleaved by pk into the camera list, so you can see at a glance where a radar sits between two cameras.
 - **Traffic flow (optional, TomTom)** — with a free TomTom API key, shows the live traffic pressure at the selected camera's position: real speed vs. free-flow speed, color-coded (green ≥80%, amber 50–80%, red <50% or road closure).
 
 ## Requirements
 
-- [Bun](https://bun.com) ≥ 1.1 (uses `bun:sqlite`-free, pure JS; any recent Bun works)
+- [Bun](https://bun.com) ≥ 1.1 (pure JS, no native modules)
 - A terminal with image support (Kitty graphics protocol or Sixel — e.g. **Kitty**, **WezTerm**, **iTerm2**, **Ghostty**) to display the camera photos.
 
 ## Install
@@ -34,9 +34,9 @@ bun install
 curl -fsSL https://raw.githubusercontent.com/mjimeneznet/dgtui/main/install.sh | bash
 ```
 
-Downloads the latest release binary (no Bun needed) and installs it to `~/.local/bin`.
+Downloads the latest release binary (no Bun needed) and installs it to `~/.local/bin`. The installer verifies the release's `SHA256SUMS` when the release publishes one.
 
-Prebuilt binaries are produced by a GitHub Actions workflow on every `v*` tag push (darwin arm64/x64, linux x64/arm64).
+Prebuilt binaries are produced by a GitHub Actions workflow on every `v*` tag push (darwin arm64/x64, linux x64/arm64). The workflow type-checks, runs the test suite and refuses to publish a binary whose architecture does not match its name.
 
 ## Run
 
@@ -52,6 +52,8 @@ bun run src/main.tsx --carr A-42                       # road A-42, all province
 bun run src/main.tsx --carr A-42 --prov 28             # road A-42, Madrid (INE code 28)
 bun run src/main.tsx --carr A-6 --prov 15 --interval 120
 ```
+
+`--prov` accepts an INE province code (with or without the leading zero); `--interval` is the refresh period in seconds. An invalid value never crashes the app: it is reported on stderr and replaced by the default (`28` / `300`).
 
 Or build a standalone binary:
 
@@ -86,7 +88,14 @@ export TOMTOM_KEY=your_api_key_here
 bun run src/main.tsx
 ```
 
-Traffic requests are cached per point (~100 m) for 2 minutes, so normal use stays well inside the free tier. If the key is missing, invalid, or the road has no flow data, the traffic line is simply not shown — the app never breaks.
+Traffic requests are cached per point (~100 m) for 2 minutes, so normal use stays well inside the free tier. If the key is missing, invalid, or the road has no flow data, the traffic line is simply not shown — the app never breaks. When TomTom reports no free-flow reference speed, the line shows the current speed only instead of a misleading percentage.
+
+## Resilience
+
+- Every feed request times out after 10 s, so a hung connection can never freeze the UI.
+- Updating the catalog never blanks the screen: the previous data stays visible until the new one arrives.
+- A missing photo shows "imagen no disponible todavía" for that camera only; it is not a global error.
+- A feed that is down (as `infocar.dgt.es` occasionally is) simply means that panel stays empty.
 
 ## Data sources
 
@@ -109,3 +118,16 @@ Source lives in `src/`:
 - `dgt.ts` — data layer: cameras, incidents, radars, traffic
 
 `bunx tsc --noEmit` type-checks; `bun run build` produces a standalone executable.
+
+The app version lives only in `package.json`: `dgt.ts` imports it, so the in-app update check cannot drift from the release tag (the release workflow rejects a tag that disagrees).
+
+```bash
+bun run typecheck   # tsc --noEmit
+bun test            # parser and helper tests
+bun run start       # run from source
+bun run build       # standalone ./dgtui binary
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

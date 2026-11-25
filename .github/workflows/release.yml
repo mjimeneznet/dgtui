@@ -8,15 +8,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - { os: macos-14, target: darwin-arm64 }
-          - { os: macos-15, target: darwin-x64 }
-          - { os: ubuntu-latest, target: linux-x64 }
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
-    runs-on: ${{ matrix.os }}
+  # Never publish a binary that does not type-check or pass its tests.
+  check:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -24,21 +18,71 @@ jobs:
         with:
           bun-version: latest
 
-      - run: bun install
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+      # package.json version drives the in-app update check, so the tag must match.
+      - name: Tag matches package.json version
+        run: |
+          want="v$(jq -r .version package.json)"
+          if [ "$want" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match ${want} — bump package.json version" >&2
+            exit 1
+          fi
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS 15 is arm64: x64 needs the -intel runner. --target makes the
+          # output architecture explicit instead of trusting the host.
+          - { runner: macos-15, target: bun-darwin-arm64, name: darwin-arm64 }
+          - { runner: macos-15-intel, target: bun-darwin-x64, name: darwin-x64 }
+          - { runner: ubuntu-latest, target: bun-linux-x64, name: linux-x64 }
+          - { runner: ubuntu-24.04-arm, target: bun-linux-arm64, name: linux-arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
 
       - name: Build standalone binary
         run: |
-          bun build --compile --minify ./src/main.tsx \
-            --outfile "dgtui-${{ matrix.target }}"
+          bun build --compile --minify \
+            --target=${{ matrix.target }} \
+            ./src/main.tsx \
+            --outfile "dgtui-${{ matrix.name }}"
+
+      - name: Verify the binary really targets this platform
+        run: |
+          bin="dgtui-${{ matrix.name }}"
+          info="$(file -b "$bin")"
+          echo "$info"
+          # Format first: an x86_64 ELF must not pass as darwin-x64.
+          case "${{ matrix.name }}" in
+            darwin-*) echo "$info" | grep -q 'Mach-O' ;;
+            linux-*)  echo "$info" | grep -q 'ELF' ;;
+          esac
+          case "${{ matrix.name }}" in
+            *arm64) echo "$info" | grep -Eq 'arm64|aarch64' ;;
+            *)      echo "$info" | grep -Eq 'x86_64|x86-64' ;;
+          esac
 
       - name: Package
-        run: |
-          tar -czf "dgtui-${{ matrix.target }}.tar.gz" "dgtui-${{ matrix.target }}"
+        run: tar -czf "dgtui-${{ matrix.name }}.tar.gz" "dgtui-${{ matrix.name }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dgtui-${{ matrix.target }}
-          path: "dgtui-${{ matrix.target }}.tar.gz"
+          name: dgtui-${{ matrix.name }}
+          path: "dgtui-${{ matrix.name }}.tar.gz"
+          if-no-files-found: error
 
   release:
     needs: build
@@ -49,7 +93,15 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
           generate_release_notes: true
